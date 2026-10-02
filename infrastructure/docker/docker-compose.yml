@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL 16 Primary Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: vesper_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: vesperpass
+      POSTGRES_DB: vesper_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vesper_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis 7 Cache & Pub/Sub for WebSockets Horizontal Scaling
+  redis:
+    image: redis:7-alpine
+    container_name: vesper_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass redis_vesper_secret
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_vesper_secret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 3. MinIO - High-Performance S3-Compatible Object Storage
+  minio:
+    image: minio/minio:RELEASE.2024-03-30T09-41-56Z
+    container_name: vesper_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: vesper_storage_access_key
+      MINIO_ROOT_PASSWORD: vesper_storage_secret_key
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # 4. Coturn WebRTC STUN/TURN Signaling Relay Server
+  coturn:
+    image: coturn/coturn:latest
+    container_name: vesper_coturn
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=turn_vesper_user:turn_vesper_secure_password
+      - --realm=vespermessenger.org
+
+  # 5. Vesper Node/Express Server + WebSockets
+  server:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.server
+    container_name: vesper_server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:vesperpass@postgres:5432/vesper_db
+      REDIS_URL: redis://:redis_vesper_secret@redis:6379
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ACCESS_KEY: vesper_storage_access_key
+      STORAGE_SECRET_KEY: vesper_storage_secret_key
+      STORAGE_BUCKET: vesper-media-vault
+      JWT_SECRET: vesper_jwt_super_secret_production_key_min_32_characters
+    ports:
+      - "3000:3000"
+
+  # 6. Nginx Reverse Proxy with SSL & WebSocket upgrades
+  nginx:
+    image: nginx:alpine
+    container_name: vesper_nginx
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

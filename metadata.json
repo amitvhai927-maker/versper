@@ -1,0 +1,9 @@
+{
+  "name": "Vesper Messenger",
+  "description": "Unified cross-platform real-time messaging platform with end-to-end messaging, voice and video calling, ephemeral stories, and group collaboration.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
